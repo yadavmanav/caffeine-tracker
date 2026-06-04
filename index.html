@@ -1,16 +1,357 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0A0A0A" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <title>Caffeine OS</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
-  </head>
-  <body style="margin:0;background:#0A0A0A;">
-    <div id="root"></div>
-  </body>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="theme-color" content="#0A0A0A"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <title>Caffeine OS</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0A0A0A;color:#fff;font-family:'Space Mono',monospace;min-height:100vh}
+    #app{max-width:480px;margin:0 auto;padding-bottom:48px}
+    .syne{font-family:'Syne',sans-serif}
+    button,select,input{font-family:'Space Mono',monospace}
+    ::-webkit-scrollbar{width:3px}
+    ::-webkit-scrollbar-thumb{background:#222;border-radius:2px}
+    select option{background:#111}
+    .qcard:hover{transform:translateY(-2px);box-shadow:0 4px 20px rgba(57,255,20,0.08)}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    .fade{animation:fadeIn 0.25s ease}
+    @keyframes toastIn{from{opacity:0;top:8px}to{opacity:1;top:18px}}
+  </style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const SUPABASE_URL = 'https://jksnfavntsbkabbgtte.supabase.co'
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imprc25mYXZudHNia2FiYmpndHRlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1MjI0MDYsImV4cCI6MjA5NjA5ODQwNn0.x0Ica1IclJkDoHbDTRvI2NeXR_nBBhW33_BZG_hh-UI'
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+
+const DAILY_LIMIT = 400
+let state = { view:'log', drinks:[], logs:[], month:monthKey(new Date()), modal:null, loading:true }
+
+function monthKey(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0') }
+function monthLabel(k){ const [y,m]=k.split('-'); return new Date(y,m-1).toLocaleDateString('en-IN',{month:'long',year:'numeric'}) }
+function fmtDate(s){ return new Date(s).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}) }
+function fmtTime(s){ return new Date(s).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) }
+
+async function init(){
+  const [dr,lg] = await Promise.all([
+    sb.from('drinks').select('*').order('created_at'),
+    sb.from('logs').select('*').order('logged_at',{ascending:false}).limit(200)
+  ])
+  state.drinks = dr.data||[]
+  state.logs = lg.data||[]
+  state.loading = false
+  render()
+}
+
+function setState(patch){ Object.assign(state,patch); render() }
+
+function showToast(msg,type='ok'){
+  const t=document.createElement('div')
+  t.textContent=msg
+  Object.assign(t.style,{position:'fixed',top:'18px',left:'50%',transform:'translateX(-50%)',
+    padding:'10px 20px',borderRadius:'8px',fontWeight:'700',fontSize:'12px',zIndex:'999',
+    whiteSpace:'nowrap',color:'#000',letterSpacing:'0.5px',fontFamily:'Space Mono,monospace',
+    background:type==='err'?'#FF3B3B':'#39FF14',animation:'toastIn 0.2s ease'})
+  document.body.appendChild(t)
+  setTimeout(()=>t.remove(),2400)
+}
+
+async function logDrink(drinkId,qty){
+  const drink=state.drinks.find(d=>d.id===drinkId)
+  if(!drink)return
+  const entry={drink_id:drink.id,drink_name:drink.name,caffeine:drink.caffeine*qty,
+    price:drink.price*qty,qty,color:drink.color,logged_at:new Date().toISOString()}
+  const {data,error}=await sb.from('logs').insert(entry).select().single()
+  if(!error&&data){ state.logs=[data,...state.logs]; showToast(`Logged ${drink.name} — ${drink.caffeine*qty}mg ⚡`) }
+  setState({modal:null})
+}
+
+async function deleteLog(id){
+  await sb.from('logs').delete().eq('id',id)
+  state.logs=state.logs.filter(l=>l.id!==id)
+  showToast('Entry removed','err')
+  setState({modal:null})
+}
+
+async function updateLog(id,caffeine,price){
+  await sb.from('logs').update({caffeine:+caffeine,price:+price}).eq('id',id)
+  state.logs=state.logs.map(l=>l.id===id?{...l,caffeine:+caffeine,price:+price}:l)
+  showToast('Entry updated')
+  setState({modal:null})
+}
+
+async function addDrink(name,caffeine,price,color){
+  const {data,error}=await sb.from('drinks').insert({name,caffeine:+caffeine,price:+price,color}).select().single()
+  if(!error&&data){ state.drinks=[...state.drinks,data]; showToast('Drink added') }
+  setState({modal:null})
+}
+
+async function updateDrink(id,name,caffeine,price,color){
+  await sb.from('drinks').update({name,caffeine:+caffeine,price:+price,color}).eq('id',id)
+  state.drinks=state.drinks.map(d=>d.id===id?{...d,name,caffeine:+caffeine,price:+price,color}:d)
+  showToast('Drink updated')
+  setState({modal:null})
+}
+
+async function deleteDrink(id){
+  await sb.from('drinks').delete().eq('id',id)
+  state.drinks=state.drinks.filter(d=>d.id!==id)
+  showToast('Drink removed','err')
+  setState({modal:null})
+}
+
+/* ── RENDER ── */
+function render(){
+  const app=document.getElementById('app')
+  if(state.loading){ app.innerHTML=`<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px"><div style="font-size:40px">⚡</div><div style="color:#39FF14;letter-spacing:3px;font-size:13px">LOADING...</div></div>`; return }
+
+  const todayStr=new Date().toISOString().slice(0,10)
+  const todayLogs=state.logs.filter(l=>(l.logged_at||'').slice(0,10)===todayStr)
+  const todayCaffeine=todayLogs.reduce((s,l)=>s+l.caffeine,0)
+  const todayPct=Math.min((todayCaffeine/DAILY_LIMIT)*100,100)
+  const barColor=todayCaffeine>DAILY_LIMIT?'#FF3B3B':todayCaffeine>300?'#FFB800':'#39FF14'
+
+  const monthLogs=state.logs.filter(l=>monthKey(new Date(l.logged_at))===state.month)
+  const totalCaffeine=monthLogs.reduce((s,l)=>s+l.caffeine,0)
+  const totalSpent=monthLogs.reduce((s,l)=>s+l.price,0)
+  const breakdown=monthLogs.reduce((acc,l)=>{
+    const k=l.drink_name
+    if(!acc[k])acc[k]={count:0,caffeine:0,spent:0,color:l.color}
+    acc[k].count+=l.qty||1; acc[k].caffeine+=l.caffeine; acc[k].spent+=l.price
+    return acc
+  },{})
+  const months=[...new Set(state.logs.map(l=>monthKey(new Date(l.logged_at))))].sort().reverse()
+  if(!months.includes(monthKey(new Date())))months.unshift(monthKey(new Date()))
+
+  /* header */
+  let html=`
+  <header style="display:flex;justify-content:space-between;align-items:center;padding:20px 20px 12px;border-bottom:1px solid #161616">
+    <div style="display:flex;align-items:center;gap:12px">
+      <span style="font-size:28px">⚡</span>
+      <div>
+        <div class="syne" style="font-size:18px;font-weight:800;letter-spacing:3px;color:#39FF14">CAFFEINE OS</div>
+        <div style="font-size:9px;opacity:.35;letter-spacing:3px;margin-top:1px">AERIS VENTURES</div>
+      </div>
+    </div>
+    <div style="text-align:right">
+      <div style="font-size:9px;opacity:.45;letter-spacing:2px">TODAY</div>
+      <div class="syne" style="font-size:22px;font-weight:800;color:${barColor}">${todayCaffeine}mg</div>
+    </div>
+  </header>
+  <div style="padding:10px 20px 0">
+    <div style="height:3px;background:#1a1a1a;border-radius:2px;overflow:hidden">
+      <div style="height:100%;width:${todayPct}%;background:${barColor};border-radius:2px;transition:width .6s ease"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:9px;opacity:.35;margin-top:4px;letter-spacing:1px">
+      <span>Daily limit ${DAILY_LIMIT}mg</span><span>${Math.round(todayPct)}%</span>
+    </div>
+  </div>
+  <nav style="display:flex;margin:14px 20px 0;background:#111;border-radius:10px;padding:4px;gap:3px">
+    ${['log','drinks','stats'].map((v,i)=>`<button onclick="setState({view:'${v}'})" style="flex:1;padding:8px 0;border:none;background:${state.view===v?'#1c1c1c':'transparent'};color:${state.view===v?'#fff':'#555'};cursor:pointer;font-size:11px;border-radius:7px;font-weight:700;letter-spacing:.5px;transition:all .2s">${['📋 Log','🥤 Drinks','📊 Stats'][i]}</button>`).join('')}
+  </nav>`
+
+  /* LOG VIEW */
+  if(state.view==='log'){
+    html+=`<div style="padding:18px 20px 0" class="fade">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <span class="syne" style="font-size:13px;font-weight:800;letter-spacing:2px;color:#39FF14">Quick Log</span>
+      <button onclick="setState({modal:'logDrink'})" style="padding:6px 14px;background:#39FF14;color:#000;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">+ Log Drink</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:4px">
+      ${state.drinks.map(d=>`
+        <button class="qcard" onclick="logDrink('${d.id}',1)" style="background:#0f0f0f;border:1px solid ${d.color}44;border-radius:10px;padding:12px 13px;cursor:pointer;text-align:left;transition:all .15s">
+          <div style="width:7px;height:7px;border-radius:50%;background:${d.color};margin-bottom:8px"></div>
+          <div style="font-size:11px;font-weight:700;color:#ddd;margin-bottom:2px;line-height:1.3">${d.name}</div>
+          <div style="color:${d.color};font-weight:700;font-size:12px">${d.caffeine}mg</div>
+          <div style="font-size:10px;opacity:.4;margin-top:3px">₹${d.price}</div>
+        </button>`).join('')}
+    </div>
+    <div class="syne" style="font-size:11px;font-weight:700;letter-spacing:2px;color:#333;margin:18px 0 10px">Recent Entries</div>
+    ${state.logs.length===0?'<div style="opacity:.3;font-size:12px;text-align:center;padding:24px 0">No entries yet. Tap a drink above!</div>':''}
+    ${state.logs.slice(0,50).map(log=>`
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #0f0f0f">
+        <div style="width:9px;height:9px;border-radius:50%;background:${log.color||'#39FF14'};flex-shrink:0"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${log.drink_name}</div>
+          <div style="font-size:10px;opacity:.38;margin-top:2px">${fmtDate(log.logged_at)} · ${fmtTime(log.logged_at)}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0">
+          <span style="color:#39FF14;font-weight:700;font-size:13px">${log.caffeine}mg</span>
+          <span style="font-size:10px;opacity:.4">₹${log.price}</span>
+        </div>
+        <div style="display:flex;gap:2px;flex-shrink:0">
+          <button onclick="setState({modal:'editLog',modalData:${JSON.stringify(log).replace(/"/g,'&quot;')}})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:3px 5px">✏️</button>
+          <button onclick="setState({modal:'confirmLog',modalData:{id:'${log.id}'}})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:3px 5px">🗑️</button>
+        </div>
+      </div>`).join('')}
+    </div>`
+  }
+
+  /* DRINKS VIEW */
+  if(state.view==='drinks'){
+    html+=`<div style="padding:18px 20px 0" class="fade">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <span class="syne" style="font-size:13px;font-weight:800;letter-spacing:2px;color:#39FF14">My Drinks</span>
+      <button onclick="setState({modal:'addDrink'})" style="padding:6px 14px;background:#39FF14;color:#000;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">+ Add Drink</button>
+    </div>
+    ${state.drinks.map(d=>`
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #0f0f0f">
+        <div style="width:3px;height:38px;border-radius:2px;background:${d.color};flex-shrink:0"></div>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:700">${d.name}</div>
+          <div style="font-size:10px;opacity:.38;margin-top:2px">
+            <span style="color:${d.color};font-weight:700">${d.caffeine}mg</span>
+            <span style="opacity:.4;margin:0 6px">·</span>
+            <span>₹${d.price}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:2px;flex-shrink:0">
+          <button onclick="logDrink('${d.id}',1)" style="background:none;border:none;cursor:pointer;font-size:13px;padding:3px 5px">➕</button>
+          <button onclick="setState({modal:'editDrink',modalData:${JSON.stringify(d).replace(/"/g,'&quot;')}})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:3px 5px">✏️</button>
+          <button onclick="setState({modal:'confirmDrink',modalData:{id:'${d.id}',name:'${d.name}'}})" style="background:none;border:none;cursor:pointer;font-size:13px;padding:3px 5px">🗑️</button>
+        </div>
+      </div>`).join('')}
+    </div>`
+  }
+
+  /* STATS VIEW */
+  if(state.view==='stats'){
+    const uniqueDays=new Set(monthLogs.map(l=>l.logged_at.slice(0,10))).size
+    const dailyAvg=monthLogs.length>0?Math.round(totalCaffeine/(uniqueDays||1)):0
+    html+=`<div style="padding:18px 20px 0" class="fade">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <span class="syne" style="font-size:13px;font-weight:800;letter-spacing:2px;color:#39FF14">Monthly Stats</span>
+      <select onchange="setState({month:this.value})" style="background:#111;border:1px solid #222;color:#fff;padding:6px 10px;border-radius:6px;font-size:11px">
+        ${months.map(m=>`<option value="${m}" ${m===state.month?'selected':''}>${monthLabel(m)}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:4px">
+      ${[
+        ['⚡',totalCaffeine.toLocaleString()+'mg','Total Caffeine'],
+        ['💸','₹'+totalSpent,'Total Spent'],
+        ['🥤',monthLogs.length,'Drinks Logged'],
+        ['📅',dailyAvg+'mg','Daily Avg'],
+      ].map(([icon,val,lbl])=>`
+        <div style="background:#0f0f0f;border:1px solid #161616;border-radius:12px;padding:14px 16px">
+          <div style="font-size:22px;margin-bottom:6px">${icon}</div>
+          <div class="syne" style="font-size:24px;font-weight:700;color:#39FF14;line-height:1">${val}</div>
+          <div style="font-size:9px;opacity:.4;margin-top:5px;letter-spacing:1.5px">${lbl}</div>
+        </div>`).join('')}
+    </div>
+    <div class="syne" style="font-size:11px;font-weight:700;letter-spacing:2px;color:#333;margin:18px 0 10px">Breakdown by Drink</div>
+    ${Object.keys(breakdown).length===0?'<div style="opacity:.3;font-size:12px;text-align:center;padding:24px 0">No logs this month.</div>':''}
+    ${Object.entries(breakdown).sort((a,b)=>b[1].caffeine-a[1].caffeine).map(([name,info])=>`
+      <div style="padding:10px 14px;border-radius:8px;margin-bottom:8px;border-left:3px solid ${info.color};background:${info.color}18">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:13px;font-weight:700">${name}</span>
+          <span style="color:${info.color};font-weight:700;font-size:13px">${info.caffeine}mg</span>
+        </div>
+        <div style="display:flex;gap:14px;margin-top:4px">
+          <span style="font-size:10px;opacity:.38">×${info.count} drinks</span>
+          <span style="font-size:10px;opacity:.38">₹${info.spent} spent</span>
+        </div>
+        <div style="height:2px;background:#1a1a1a;border-radius:1px;margin-top:8px;overflow:hidden">
+          <div style="height:100%;width:${Math.min((info.caffeine/(totalCaffeine||1))*100,100)}%;background:${info.color};border-radius:1px;transition:width .5s ease"></div>
+        </div>
+      </div>`).join('')}
+    </div>`
+  }
+
+  /* MODALS */
+  if(state.modal){
+    const COLORS=['#39FF14','#00CFFF','#FFB800','#FF6B35','#C8A97A','#C8102E','#BF5FFF','#FF69B4','#A8D8A8','#FF3B00']
+    let modalContent=''
+
+    if(state.modal==='logDrink'){
+      const first=state.drinks[0]
+      modalContent=`
+        <div class="syne" style="font-size:14px;font-weight:800;letter-spacing:2px;color:#39FF14;margin-bottom:20px">Log a Drink</div>
+        <div style="font-size:10px;opacity:.45;letter-spacing:1.5px;margin-bottom:6px;text-transform:uppercase">Choose Drink</div>
+        <select id="m-drink" style="width:100%;background:#0A0A0A;border:1px solid #1e1e1e;color:#fff;padding:10px 12px;border-radius:8px;font-size:13px;margin-bottom:14px">
+          ${state.drinks.map(d=>`<option value="${d.id}">${d.name} — ${d.caffeine}mg — ₹${d.price}</option>`).join('')}
+        </select>
+        <div style="font-size:10px;opacity:.45;letter-spacing:1.5px;margin-bottom:8px;text-transform:uppercase">Quantity</div>
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+          <button onclick="document.getElementById('m-qty').value=Math.max(1,+document.getElementById('m-qty').value-1)" style="width:38px;height:38px;background:#1a1a1a;border:none;color:#fff;border-radius:8px;cursor:pointer;font-size:20px">−</button>
+          <input id="m-qty" type="number" value="1" min="1" style="width:50px;background:transparent;border:none;color:#fff;font-size:22px;font-weight:700;text-align:center;font-family:inherit"/>
+          <button onclick="document.getElementById('m-qty').value=+document.getElementById('m-qty').value+1" style="width:38px;height:38px;background:#1a1a1a;border:none;color:#fff;border-radius:8px;cursor:pointer;font-size:20px">+</button>
+        </div>
+        <button onclick="logDrink(document.getElementById('m-drink').value,+document.getElementById('m-qty').value)" style="width:100%;padding:13px;background:#39FF14;color:#000;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:700">Log It ⚡</button>`
+    }
+
+    if(state.modal==='addDrink'||state.modal==='editDrink'){
+      const ed=state.modal==='editDrink'?state.modalData:{}
+      modalContent=`
+        <div class="syne" style="font-size:14px;font-weight:800;letter-spacing:2px;color:#39FF14;margin-bottom:20px">${state.modal==='editDrink'?'Edit Drink':'Add New Drink'}</div>
+        ${['name:Drink Name:text:e.g. Monster Zero','caffeine:Caffeine (mg):number:e.g. 150','price:Price (₹):number:e.g. 125'].map(f=>{
+          const [id,lbl,type,ph]=f.split(':')
+          return `<div style="font-size:10px;opacity:.45;letter-spacing:1.5px;margin-bottom:6px;text-transform:uppercase">${lbl}</div>
+          <input id="m-${id}" type="${type}" placeholder="${ph}" value="${ed[id]||''}" style="width:100%;background:#0A0A0A;border:1px solid #1e1e1e;color:#fff;padding:10px 12px;border-radius:8px;font-size:14px;margin-bottom:14px"/>`
+        }).join('')}
+        <div style="font-size:10px;opacity:.45;letter-spacing:1.5px;margin-bottom:8px;text-transform:uppercase">Color</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px">
+          ${COLORS.map(c=>`<div onclick="document.getElementById('m-color').value='${c}';document.querySelectorAll('.cc').forEach(x=>x.style.border='2px solid transparent');this.style.border='3px solid #fff'" class="cc" style="width:28px;height:28px;border-radius:50%;background:${c};cursor:pointer;border:${(ed.color||'#39FF14')===c?'3px solid #fff':'2px solid transparent'};transition:border .15s"></div>`).join('')}
+          <input type="hidden" id="m-color" value="${ed.color||'#39FF14'}"/>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button onclick="${state.modal==='editDrink'?`updateDrink('${ed.id}',document.getElementById('m-name').value,document.getElementById('m-caffeine').value,document.getElementById('m-price').value,document.getElementById('m-color').value)`:`addDrink(document.getElementById('m-name').value,document.getElementById('m-caffeine').value,document.getElementById('m-price').value,document.getElementById('m-color').value)`}" style="flex:1;padding:13px;background:#39FF14;color:#000;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:700">Save</button>
+          <button onclick="setState({modal:null})" style="flex:1;padding:13px;background:#1a1a1a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:13px">Cancel</button>
+        </div>`
+    }
+
+    if(state.modal==='editLog'){
+      const lg=state.modalData
+      modalContent=`
+        <div class="syne" style="font-size:14px;font-weight:800;letter-spacing:2px;color:#39FF14;margin-bottom:20px">Edit Entry</div>
+        <div style="font-size:10px;opacity:.45;letter-spacing:1.5px;margin-bottom:6px;text-transform:uppercase">Caffeine (mg)</div>
+        <input id="m-caf" type="number" value="${lg.caffeine}" style="width:100%;background:#0A0A0A;border:1px solid #1e1e1e;color:#fff;padding:10px 12px;border-radius:8px;font-size:14px;margin-bottom:14px"/>
+        <div style="font-size:10px;opacity:.45;letter-spacing:1.5px;margin-bottom:6px;text-transform:uppercase">Price (₹)</div>
+        <input id="m-pri" type="number" value="${lg.price}" style="width:100%;background:#0A0A0A;border:1px solid #1e1e1e;color:#fff;padding:10px 12px;border-radius:8px;font-size:14px;margin-bottom:14px"/>
+        <div style="display:flex;gap:10px">
+          <button onclick="updateLog('${lg.id}',document.getElementById('m-caf').value,document.getElementById('m-pri').value)" style="flex:1;padding:13px;background:#39FF14;color:#000;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:700">Save</button>
+          <button onclick="setState({modal:null})" style="flex:1;padding:13px;background:#1a1a1a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:13px">Cancel</button>
+        </div>`
+    }
+
+    if(state.modal==='confirmLog'||state.modal==='confirmDrink'){
+      const isLog=state.modal==='confirmLog'
+      modalContent=`
+        <div class="syne" style="font-size:14px;font-weight:800;letter-spacing:2px;color:#FF3B3B;margin-bottom:16px">Confirm Delete</div>
+        <p style="color:#aaa;margin-bottom:20px;font-size:13px">Delete this ${isLog?'log entry':'drink'}? This cannot be undone.</p>
+        <div style="display:flex;gap:10px">
+          <button onclick="${isLog?`deleteLog('${state.modalData.id}')`:`deleteDrink('${state.modalData.id}')`}" style="flex:1;padding:13px;background:#FF3B3B;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:700">Delete</button>
+          <button onclick="setState({modal:null})" style="flex:1;padding:13px;background:#1a1a1a;color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:13px">Cancel</button>
+        </div>`
+    }
+
+    html+=`
+    <div onclick="if(event.target===this)setState({modal:null})" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:flex-end;justify-content:center;z-index:100">
+      <div style="background:#111;border-radius:18px 18px 0 0;width:100%;max-width:480px;padding:20px 20px 36px;max-height:85vh;overflow-y:auto" class="fade">
+        <button onclick="setState({modal:null})" style="position:absolute;right:20px;background:none;border:none;color:#555;font-size:18px;cursor:pointer;margin-top:-4px">✕</button>
+        ${modalContent}
+      </div>
+    </div>`
+  }
+
+  app.innerHTML=html
+}
+
+/* expose to window for inline handlers */
+window.setState=setState
+window.logDrink=logDrink
+window.deleteLog=deleteLog
+window.updateLog=updateLog
+window.addDrink=addDrink
+window.updateDrink=updateDrink
+window.deleteDrink=deleteDrink
+
+init()
+</script>
+</body>
 </html>
